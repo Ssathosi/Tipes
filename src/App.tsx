@@ -212,10 +212,7 @@ export default function App() {
   if (!user && !isGuest) {
     return (
       <LoginScreen
-        enterGuestMode={() => {
-          setIsGuest(true);
-          localStorage.setItem('tipes_guest', 'true');
-        }}
+        enterGuestMode={enterGuestMode}
       />
     );
   }
@@ -708,8 +705,6 @@ export default function App() {
             onResetApp={handleResetApp}
             onSignOut={async () => {
               await signOut();
-              setIsGuest(false);
-              localStorage.removeItem('tipes_guest');
               setIsSettingsOpen(false);
             }}
             streak={streak}
