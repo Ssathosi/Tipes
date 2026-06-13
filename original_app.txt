@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
@@ -25,7 +25,7 @@ type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
 export default function App() {
-  const { user, loading: authLoading, isGuest, enterGuestMode, signOut } = useAuth();
+  const { user, loading: authLoading, isGuest } = useAuth();
   
   // Navigation & step control
   const [step, setStep] = useState<AppStep>('welcome');
@@ -91,15 +91,8 @@ export default function App() {
             setUsername(prefs.username);
             setMonthlyLimit(prefs.monthly_budget);
             setSelectedMainCategories(prefs.selected_categories);
-            setStep('app'); // Skip onboarding for returning users
-          } else {
-            // New user - check localStorage for step progress
             const savedStep = localStorage.getItem('tipes_step') as AppStep;
-            if (savedStep && savedStep !== 'welcome') {
-              setStep(savedStep);
-            } else {
-              setStep('welcome');
-            }
+            if (savedStep) setStep(savedStep);
           }
 
           const txs = await services.fetchTransactions(user.id);
@@ -138,6 +131,7 @@ export default function App() {
         async (payload) => {
           console.log('[Realtime] Transaction changed:', payload);
           
+          // Reload transactions from database
           try {
             const { data, error } = await supabase
               .from('transactions')
@@ -193,7 +187,7 @@ export default function App() {
 
   // Show login if not authenticated and not in guest mode
   if (!user && !isGuest) {
-    return <LoginScreen enterGuestMode={enterGuestMode} />;
+    return <LoginScreen />;
   }
 
   // Save user preferences to Supabase
@@ -232,28 +226,11 @@ export default function App() {
     type: 'income' | 'expense';
     date?: number;
   }) => {
+    if (!user) return;
+    
     const config = getCategoryIconConfig(newTx.category);
     const now = newTx.date || Date.now();
 
-    if (isGuest) {
-      const guestTx: Transaction = {
-        id: `guest_${Date.now()}`,
-        title: newTx.title,
-        category: newTx.category,
-        amount: newTx.amount,
-        type: newTx.type,
-        date: now,
-        icon: config.icon,
-        iconBg: config.iconBg,
-        iconColor: config.iconColor,
-      };
-      setTransactions([guestTx, ...transactions]);
-      setIsAddExpenseOpen(false);
-      return;
-    }
-
-    if (!user) return;
-    
     try {
       const createdTx = await services.createTransaction(user.id, {
         title: newTx.title,
@@ -294,12 +271,6 @@ export default function App() {
     };
 
     try {
-      if (isGuest) {
-        const updatedTxs = transactions.map(t => t.id === finalTx.id ? finalTx : t);
-        setTransactions(updatedTxs);
-        setEditingTransaction(null);
-        return;
-      }
       await services.updateTransaction(finalTx);
       const updatedTxs = transactions.map(t => t.id === finalTx.id ? finalTx : t);
       setTransactions(updatedTxs);
@@ -316,9 +287,7 @@ export default function App() {
     if (!target) return;
 
     try {
-      if (!isGuest) {
-        await services.deleteTransaction(id);
-      }
+      await services.deleteTransaction(id);
       const filtered = transactions.filter(t => t.id !== id);
       setTransactions(filtered);
 
@@ -339,16 +308,6 @@ export default function App() {
 
   // Preset management
   const handleSavePreset = async (preset: Preset) => {
-    if (isGuest) {
-      const existing = presets.find(p => p.id === preset.id);
-      if (existing) {
-        setPresets(presets.map(p => p.id === preset.id ? preset : p));
-      } else {
-        setPresets([...presets, { ...preset, id: `preset_${Date.now()}` }]);
-      }
-      return;
-    }
-
     if (!user) return;
     
     const existing = presets.find(p => p.id === preset.id);
@@ -374,9 +333,7 @@ export default function App() {
 
   const handleDeletePreset = async (id: string) => {
     try {
-      if (!isGuest) {
-        await services.deletePreset(id);
-      }
+      await services.deletePreset(id);
       const updatedPresets = presets.filter(p => p.id !== id);
       setPresets(updatedPresets);
     } catch (error) {
@@ -470,7 +427,7 @@ export default function App() {
     setTransactions(initialTransactions);
     setWallets(initialWallets);
     setPresets(initialPresets);
-    setUsername('User');
+    setUsername('Rani');
     setMonthlyLimit(5000000);
     setStep('welcome');
     setActiveTab('dashboard');
@@ -484,14 +441,16 @@ export default function App() {
   return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-50 relative flex flex-col shadow-2xl overflow-hidden border border-slate-100">
       
-      {/* Onboarding: Input Nickname */}
+      {/* Onboarding welcome */}
       {step === 'welcome' && (
         <OnboardingWelcome 
-          initialName={user?.fullName || ''}
-          onContinue={(nickname) => {
-            setUsername(nickname);
+          onContinue={() => {
             setStep('budget');
             saveToLocal('tipes_step', 'budget');
+          }}
+          onGoToLogin={() => {
+            setStep('app');
+            saveToLocal('tipes_step', 'app');
           }}
         />
       )}
@@ -521,7 +480,7 @@ export default function App() {
           }}
           onFinish={async (categories) => {
             setSelectedMainCategories(categories);
-            await savePreferences({ username, selected_categories: categories, monthly_budget: monthlyLimit });
+            await savePreferences({ selected_categories: categories });
             setStep('app');
             saveToLocal('tipes_step', 'app');
           }}
@@ -540,18 +499,11 @@ export default function App() {
                 className="w-10 h-10 rounded-full overflow-hidden border-2 border-blue-200 cursor-pointer hover:opacity-90 active:scale-95 transition-all"
                 title="Pengaturan"
               >
-                {user?.imageUrl ? (
-                  <img 
-                    alt={username} 
-                    className="w-full h-full object-cover" 
-                    src={user.imageUrl}
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="w-full h-full bg-gradient-to-br from-[#2650cf] to-[#456aea] flex items-center justify-center text-white font-bold text-sm">
-                    {username.charAt(0).toUpperCase()}
-                  </div>
-                )}
+                <img 
+                  alt={username} 
+                  className="w-full h-full object-cover" 
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuCwdbVrWDx7kyGUT2RyWk9jrp1WKSx8tOTym4WBTs_Ln-xz2E-CJypYVklHt9kCv89A9kzD43Pn-g63jlcRG0B6SO5ZEOVZ4YOM_6nNjUDmAXQlGsOvPShAfxVKoE60e9fM5rUjx9wbS1uyxkjnvHiUzYmZ2ay1eRENa-yF2B_fF0iAVWX4JakAW4_vZnoCDZCQHFhbQmlmCgPTB0VmIvaJUas3Z9A-z5XdecWggryOFVV-vpk__Yxq20SQB0WL_xKLsNZ5hSmPQSc"
+                />
               </div>
               <div>
                 <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide leading-none">Hello,</p>
@@ -562,7 +514,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               {/* Streak Badge */}
               <div className="flex items-center gap-1.5 bg-gradient-to-r from-orange-50 to-amber-50 px-3 py-1.5 rounded-full border border-orange-200/50 text-xs font-bold">
-                <span className="text-sm">🔥</span>
+                <span className="text-sm">≡ƒöÑ</span>
                 <span className="text-orange-700">{streak.current} day{streak.current !== 1 ? 's' : ''}</span>
               </div>
 
@@ -572,11 +524,11 @@ export default function App() {
                   const remaining = monthlyLimit - budgetSpent;
                   const percent = monthlyLimit > 0 ? Math.round((budgetSpent / monthlyLimit) * 100) : 0;
                   alert(
-                    `📊 Budget Report\n\n` +
+                    `≡ƒôè Budget Report\n\n` +
                     `Limit: ${formatIDR(monthlyLimit)}\n` +
                     `Spent: ${formatIDR(budgetSpent)} (${percent}%)\n` +
                     `Remaining: ${formatIDR(Math.max(0, remaining))}\n\n` +
-                    `${percent >= 80 ? '⚠️ Warning: Budget hampir habis!' : '✅ Budget masih aman!'}`
+                    `${percent >= 80 ? 'ΓÜá∩╕Å Warning: Budget hampir habis!' : 'Γ£à Budget masih aman!'}`
                   );
                 }}
                 className="w-9 h-9 flex items-center justify-center rounded-full bg-slate-50 text-[#434654] border border-slate-100 hover:bg-slate-100 transition-colors cursor-pointer"
@@ -725,7 +677,7 @@ export default function App() {
             onImportCSV={handleImportCSV}
             onResetApp={handleResetApp}
             onSignOut={async () => {
-              await signOut();
+              await supabase.auth.signOut();
               setIsSettingsOpen(false);
             }}
             streak={streak}

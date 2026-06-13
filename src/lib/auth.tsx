@@ -2,7 +2,7 @@ import { createContext, useContext, useState, ReactNode } from 'react';
 import { useUser, useClerk } from '@clerk/clerk-react';
 
 interface AuthContextType {
-  user: { id: string; email?: string } | null;
+  user: { id: string; email?: string; fullName?: string; imageUrl?: string } | null;
   loading: boolean;
   isGuest: boolean;
   enterGuestMode: () => void;
@@ -31,6 +31,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mappedUser = user ? {
     id: user.id,
     email: user.primaryEmailAddress?.emailAddress,
+    fullName: user.fullName || undefined,
+    imageUrl: user.imageUrl || undefined,
   } : null;
 
   // Clear guest mode when Clerk user signs in
