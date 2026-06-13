@@ -4,7 +4,7 @@ import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
 import { calculateStreak, formatIDR } from './utils';
 import { getCategoryById, CATEGORIES } from './categories';
-import { useSession, signOut } from './lib/auth';
+import { useAuth } from './lib/auth';
 import { supabase } from './lib/supabase';
 import * as services from './lib/services';
 import { exportToCSV, exportToJSON, importFromJSON, importFromCSV } from './lib/export';
@@ -25,34 +25,24 @@ type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
 export default function App() {
-  const { data: session, isPending, error } = useSession();
-  const user = session?.user ?? null;
-  const [isGuest, setIsGuest] = useState(() => localStorage.getItem('tipes_guest') === 'true');
-  const [sessionTimeout, setSessionTimeout] = useState(false);
+  const { user, loading, isGuest, enterGuestMode, signOut } = useAuth();
 
-  // Timeout for session loading (max 5 seconds)
-  useEffect(() => {
-    if (isPending) {
-      const timer = setTimeout(() => {
-        setSessionTimeout(true);
-      }, 5000);
-      return () => clearTimeout(timer);
-    } else {
-      setSessionTimeout(false);
-    }
-  }, [isPending]);
+  // Redirect to login if not authenticated and not in guest mode
+  if (!loading && !user && !isGuest) {
+    return <LoginScreen enterGuestMode={enterGuestMode} />;
+  }
 
-  const authLoading = isPending && !sessionTimeout;
-
-  // Log session errors for debugging
-  useEffect(() => {
-    if (error) {
-      console.error('[Auth] Session error:', error);
-    }
-    if (sessionTimeout) {
-      console.warn('[Auth] Session loading timed out after 5 seconds');
-    }
-  }, [error, sessionTimeout]);
+  // Show loading while checking auth
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block w-12 h-12 border-4 border-[#2650cf] border-t-transparent rounded-full animate-spin mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
   
   // Navigation & step control
   const [step, setStep] = useState<AppStep>('welcome');
