@@ -1,8 +1,7 @@
 import { useState, FormEvent } from 'react';
-import { useAuth } from '../lib/auth';
+import { signIn, signUp } from '../lib/auth';
 
-export default function LoginScreen() {
-  const { signInWithGoogle, signInWithEmail, signUpWithEmail, enterGuestMode } = useAuth();
+export default function LoginScreen({ enterGuestMode }: { enterGuestMode: () => void }) {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,9 +16,15 @@ export default function LoginScreen() {
 
     try {
       if (isSignUp) {
-        await signUpWithEmail(email, password, username);
+        const res = await signUp.email({
+          email,
+          password,
+          name: username || email.split('@')[0],
+        });
+        if (res.error) throw res.error;
       } else {
-        await signInWithEmail(email, password);
+        const res = await signIn.email({ email, password });
+        if (res.error) throw res.error;
       }
     } catch (err: any) {
       setError(err.message || 'Terjadi kesalahan');
@@ -32,7 +37,8 @@ export default function LoginScreen() {
     setError('');
     setLoading(true);
     try {
-      await signInWithGoogle();
+      const res = await signIn.social({ provider: 'google' });
+      if (res.error) throw res.error;
     } catch (err: any) {
       setError(err.message || 'Gagal login dengan Google');
       setLoading(false);

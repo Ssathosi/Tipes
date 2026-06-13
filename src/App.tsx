@@ -4,7 +4,7 @@ import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
 import { calculateStreak, formatIDR } from './utils';
 import { getCategoryById, CATEGORIES } from './categories';
-import { useAuth } from './lib/auth';
+import { useSession, signOut } from './lib/auth';
 import { supabase } from './lib/supabase';
 import * as services from './lib/services';
 import { exportToCSV, exportToJSON, importFromJSON, importFromCSV } from './lib/export';
@@ -25,7 +25,9 @@ type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
 export default function App() {
-  const { user, loading: authLoading, isGuest } = useAuth();
+  const { data: session, isPending: authLoading } = useSession();
+  const user = session?.user ?? null;
+  const [isGuest, setIsGuest] = useState(() => localStorage.getItem('tipes_guest') === 'true');
   
   // Navigation & step control
   const [step, setStep] = useState<AppStep>('welcome');
@@ -187,7 +189,14 @@ export default function App() {
 
   // Show login if not authenticated and not in guest mode
   if (!user && !isGuest) {
-    return <LoginScreen />;
+    return (
+      <LoginScreen
+        enterGuestMode={() => {
+          setIsGuest(true);
+          localStorage.setItem('tipes_guest', 'true');
+        }}
+      />
+    );
   }
 
   // Save user preferences to Supabase
@@ -677,7 +686,9 @@ export default function App() {
             onImportCSV={handleImportCSV}
             onResetApp={handleResetApp}
             onSignOut={async () => {
-              await supabase.auth.signOut();
+              await signOut();
+              setIsGuest(false);
+              localStorage.removeItem('tipes_guest');
               setIsSettingsOpen(false);
             }}
             streak={streak}
