@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
@@ -7,7 +7,7 @@ import { getCategoryById, CATEGORIES } from './categories';
 import { useAuth } from './lib/auth';
 import { supabase } from './lib/supabase';
 import * as services from './lib/services';
-import { exportToCSV, exportToJSON, importFromJSON, importFromCSV } from './lib/export';
+import { exportToCSV, exportToJSON } from './lib/export';
 
 // Components
 import LoginScreen from './components/LoginScreen';
@@ -25,19 +25,14 @@ type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
 // Main app content - only renders when user is authenticated
-function MainApp({ user, isGuest, signOut, enterGuestMode }: { 
-  user: { id: string; email?: string } | null; 
-  isGuest: boolean; 
+function MainApp({ user, isGuest, signOut, enterGuestMode }: {
+  user: { id: string; email?: string } | null;
+  isGuest: boolean;
   signOut: () => Promise<void>;
   enterGuestMode: () => void;
 }) {
   // All state hooks
-  const [step, setStep] = useState<AppStep>(() => {
-    const userId = user?.id || 'guest';
-    const onboardingKey = `tipes_onboarding_completed_${userId}`;
-    const hasCompletedOnboarding = localStorage.getItem(onboardingKey) === 'true';
-    return hasCompletedOnboarding ? 'app' : 'welcome';
-  });
+  const [step, setStep] = useState<AppStep>('welcome');
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [username, setUsername] = useState<string>('User');
   const [monthlyLimit, setMonthlyLimit] = useState<number>(5000000);
@@ -54,6 +49,8 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [dataLoading, setDataLoading] = useState<boolean>(false);
   const [showConfetti, setShowConfetti] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const streak = calculateStreak(transactions);
 
@@ -65,6 +62,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
         if (isGuest) {
           const savedStep = localStorage.getItem('tipes_step') as AppStep;
           if (savedStep) setStep(savedStep);
+          else setStep('welcome');
 
           const savedUsername = localStorage.getItem('tipes_username');
           if (savedUsername) setUsername(savedUsername);
@@ -90,6 +88,8 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
             setMonthlyLimit(prefs.monthly_budget);
             setSelectedMainCategories(prefs.selected_categories);
             setStep('app');
+          } else {
+            setStep('welcome');
           }
 
           const txs = await services.fetchTransactions(user.id);
@@ -158,13 +158,14 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
   }, [user, isGuest]);
 
   // Transaction handlers
-  const handleAddTransaction = useCallback(async (txData: Omit<Transaction, 'id' | 'user_id' | 'created_at'>) => {
+  const handleSaveTransaction = useCallback((txData: {
+    title: string; category: string; amount: number; type: 'income' | 'expense'; date?: number;
+  }) => {
     if (isGuest) {
       const newTx: Transaction = {
         ...txData,
         id: `guest_${Date.now()}`,
-        user_id: 'guest',
-        created_at: new Date().toISOString(),
+        date: txData.date || Date.now(),
       };
       setTransactions(prev => [newTx, ...prev]);
       setIsAddExpenseOpen(false);
@@ -172,38 +173,33 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     }
 
     if (!user) return;
-    try {
-      await services.createTransaction({ ...txData, user_id: user.id });
+    services.createTransaction(user.id, {
+      ...txData,
+      date: txData.date || Date.now(),
+    }).then(() => {
       setIsAddExpenseOpen(false);
-    } catch (error) {
-      console.error('Failed to create transaction:', error);
-    }
+    }).catch(err => console.error('Failed to create transaction:', err));
   }, [isGuest, user]);
 
-  const handleUpdateTransaction = useCallback(async (id: string, updates: Partial<Transaction>) => {
+  const handleUpdateTransaction = useCallback((tx: {
+    id: string; title: string; category: string; amount: number; type: 'income' | 'expense'; date: number;
+  }) => {
     if (isGuest) {
-      setTransactions(prev => prev.map(tx => tx.id === id ? { ...tx, ...updates } : tx));
+      setTransactions(prev => prev.map(t => t.id === tx.id ? { ...t, ...tx } : t));
       setEditingTransaction(null);
       return;
     }
-    try {
-      await services.updateTransaction(id, updates);
+    services.updateTransaction(tx as Transaction).then(() => {
       setEditingTransaction(null);
-    } catch (error) {
-      console.error('Failed to update transaction:', error);
-    }
+    }).catch(err => console.error('Failed to update transaction:', err));
   }, [isGuest]);
 
-  const handleDeleteTransaction = useCallback(async (id: string) => {
+  const handleDeleteTransaction = useCallback((id: string) => {
     if (isGuest) {
       setTransactions(prev => prev.filter(tx => tx.id !== id));
       return;
     }
-    try {
-      await services.deleteTransaction(id);
-    } catch (error) {
-      console.error('Failed to delete transaction:', error);
-    }
+    services.deleteTransaction(id).catch(err => console.error('Failed to delete transaction:', err));
   }, [isGuest]);
 
   const handleUsernameChange = useCallback(async (name: string) => {
@@ -214,7 +210,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     }
     if (!user) return;
     try {
-      await services.upsertUserPreferences(user.id, {
+      await services.updateUserPreferences(user.id, {
         username: name,
         monthly_budget: monthlyLimit,
         selected_categories: selectedMainCategories,
@@ -232,7 +228,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     }
     if (!user) return;
     try {
-      await services.upsertUserPreferences(user.id, {
+      await services.updateUserPreferences(user.id, {
         username,
         monthly_budget: limit,
         selected_categories: selectedMainCategories,
@@ -250,7 +246,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     }
     if (!user) return;
     try {
-      await services.upsertUserPreferences(user.id, {
+      await services.updateUserPreferences(user.id, {
         username,
         monthly_budget: monthlyLimit,
         selected_categories: categories,
@@ -260,11 +256,25 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     }
   }, [user, isGuest, username, monthlyLimit]);
 
-  const handleCompleteOnboarding = useCallback(() => {
-    const userId = user?.id || 'guest';
-    localStorage.setItem(`tipes_onboarding_completed_${userId}`, 'true');
+  const handleCompleteOnboarding = useCallback(async () => {
+    if (!isGuest && user) {
+      try {
+        await services.updateUserPreferences(user.id, {
+          username,
+          monthly_budget: monthlyLimit,
+          selected_categories: selectedMainCategories,
+        });
+      } catch (error) {
+        console.error('Failed to save onboarding:', error);
+      }
+    } else {
+      localStorage.setItem('tipes_step', 'app');
+      localStorage.setItem('tipes_username', username);
+      localStorage.setItem('tipes_budget', monthlyLimit.toString());
+      localStorage.setItem('tipes_categories', JSON.stringify(selectedMainCategories));
+    }
     setStep('app');
-  }, [user]);
+  }, [user, isGuest, username, monthlyLimit, selectedMainCategories]);
 
   const handleSavePreset = useCallback(async (preset: Omit<Preset, 'id'>) => {
     const newPreset: Preset = {
@@ -274,7 +284,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     setPresets(prev => [...prev, newPreset]);
     if (!isGuest && user) {
       try {
-        await services.createPreset({ ...preset, user_id: user.id });
+        await services.createPreset(user.id, preset);
       } catch (error) {
         console.error('Failed to save preset:', error);
       }
@@ -298,41 +308,66 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
   }, [transactions]);
 
   const handleExportJSON = useCallback(() => {
-    exportToJSON({ transactions, presets, username, monthlyLimit, selectedMainCategories });
-  }, [transactions, presets, username, monthlyLimit, selectedMainCategories]);
+    exportToJSON(transactions);
+  }, [transactions]);
 
-  const handleImportJSON = useCallback(() => {
-    importFromJSON().then(data => {
-      if (data) {
-        setTransactions(data.transactions || []);
-        setPresets(data.presets || []);
-        if (data.username) setUsername(data.username);
-        if (data.monthlyLimit) setMonthlyLimit(data.monthlyLimit);
-        if (data.selectedMainCategories) setSelectedMainCategories(data.selectedMainCategories);
+  const handleImportJSON = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (Array.isArray(data)) {
+          setTransactions(prev => [...data, ...prev]);
+        }
+      } catch (err) {
+        console.error('Failed to import JSON:', err);
       }
-    });
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   }, []);
 
-  const handleImportCSV = useCallback(() => {
-    importFromCSV().then(data => {
-      if (data && data.length > 0) {
-        setTransactions(prev => [...data, ...prev]);
+  const handleImportCSV = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const lines = content.split('\n').filter(line => line.trim());
+        if (lines.length < 2) return;
+        const dataLines = lines.slice(1);
+        const imported: Transaction[] = dataLines.map((line, index) => {
+          const values = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+          return {
+            id: `imported-${Date.now()}-${index}`,
+            title: values[0] || 'Imported',
+            category: values[1] || 'Lainnya',
+            amount: parseFloat(values[2]) || 0,
+            type: (values[3] || 'expense') as 'income' | 'expense',
+            date: parseInt(values[4]) || Date.now(),
+          };
+        });
+        setTransactions(prev => [...imported, ...prev]);
+      } catch (err) {
+        console.error('Failed to import CSV:', err);
       }
-    });
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   }, []);
 
   const handleResetApp = useCallback(async () => {
     if (isGuest) {
-      localStorage.removeItem('tipes_transactions');
-      localStorage.removeItem('tipes_presets');
-      localStorage.removeItem('tipes_username');
-      localStorage.removeItem('tipes_budget');
-      localStorage.removeItem('tipes_categories');
-      localStorage.removeItem('tipes_wallets');
+      localStorage.clear();
     } else if (user) {
       try {
-        await services.deleteAllTransactions(user.id);
-        await services.deleteUserPreferences(user.id);
+        // Delete all transactions for this user
+        for (const tx of transactions) {
+          await services.deleteTransaction(tx.id);
+        }
       } catch (error) {
         console.error('Failed to reset app:', error);
       }
@@ -343,10 +378,8 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     setMonthlyLimit(5000000);
     setSelectedMainCategories(['Makanan', 'Transportasi', 'Belanja', 'Hiburan', 'Kesehatan', 'Utilitas', 'Pemasukan', 'Lainnya']);
     setStep('welcome');
-    const userId = user?.id || 'guest';
-    localStorage.removeItem(`tipes_onboarding_completed_${userId}`);
     setIsSettingsOpen(false);
-  }, [user, isGuest]);
+  }, [user, isGuest, transactions]);
 
   // Loading state
   if (dataLoading) {
@@ -466,23 +499,34 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
         <span className="material-symbols-outlined text-3xl">add</span>
       </motion.button>
 
+      {/* Hidden file inputs for import */}
+      <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportJSON} className="hidden" />
+      <input ref={csvInputRef} type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+
       {/* Modals & Sheets */}
       <AddTransactionSheet
         isOpen={isAddExpenseOpen}
         onClose={() => setIsAddExpenseOpen(false)}
-        onAddTransaction={handleAddTransaction}
+        onSave={handleSaveTransaction}
         presets={presets}
+        onManagePresets={() => {
+          setIsAddExpenseOpen(false);
+          setIsPresetManagerOpen(true);
+        }}
       />
 
       {editingTransaction && (
         <AddTransactionSheet
           isOpen={!!editingTransaction}
           onClose={() => setEditingTransaction(null)}
-          onAddTransaction={(data) => {
-            handleUpdateTransaction(editingTransaction.id, data);
+          onSave={(data) => handleUpdateTransaction({ ...editingTransaction, ...data })}
+          presets={presets}
+          onManagePresets={() => {
+            setEditingTransaction(null);
+            setIsPresetManagerOpen(true);
           }}
           editingTransaction={editingTransaction}
-          presets={presets}
+          onUpdate={handleUpdateTransaction}
         />
       )}
 
@@ -503,8 +547,8 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
         onBudgetChange={handleBudgetChange}
         onExportCSV={handleExportCSV}
         onExportJSON={handleExportJSON}
-        onImportJSON={handleImportJSON}
-        onImportCSV={handleImportCSV}
+        onImportJSON={() => fileInputRef.current?.click()}
+        onImportCSV={() => csvInputRef.current?.click()}
         onResetApp={handleResetApp}
         onSignOut={async () => {
           await signOut();
@@ -521,12 +565,10 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
 export default function App() {
   const { user, loading, isGuest, enterGuestMode, signOut } = useAuth();
 
-  // Redirect to login if not authenticated
   if (!loading && !user && !isGuest) {
     return <LoginScreen enterGuestMode={enterGuestMode} />;
   }
 
-  // Show loading
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -538,6 +580,5 @@ export default function App() {
     );
   }
 
-  // User is authenticated - render main app
   return <MainApp user={user} isGuest={isGuest} signOut={signOut} enterGuestMode={enterGuestMode} />;
 }
