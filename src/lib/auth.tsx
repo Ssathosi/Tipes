@@ -1,7 +1,7 @@
 import { createAuthClient } from 'better-auth/react';
 
 const authClient = createAuthClient({
-  baseURL: import.meta.env.VITE_APP_URL || 'http://localhost:3000',
+  baseURL: import.meta.env.VITE_APP_URL || 'https://sth-tipes.vercel.app',
 });
 
 export const { signIn, signUp, signOut, useSession, getSession } = authClient;
