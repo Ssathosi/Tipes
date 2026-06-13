@@ -25,9 +25,34 @@ type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
 export default function App() {
-  const { data: session, isPending: authLoading } = useSession();
+  const { data: session, isPending, error } = useSession();
   const user = session?.user ?? null;
   const [isGuest, setIsGuest] = useState(() => localStorage.getItem('tipes_guest') === 'true');
+  const [sessionTimeout, setSessionTimeout] = useState(false);
+
+  // Timeout for session loading (max 5 seconds)
+  useEffect(() => {
+    if (isPending) {
+      const timer = setTimeout(() => {
+        setSessionTimeout(true);
+      }, 5000);
+      return () => clearTimeout(timer);
+    } else {
+      setSessionTimeout(false);
+    }
+  }, [isPending]);
+
+  const authLoading = isPending && !sessionTimeout;
+
+  // Log session errors for debugging
+  useEffect(() => {
+    if (error) {
+      console.error('[Auth] Session error:', error);
+    }
+    if (sessionTimeout) {
+      console.warn('[Auth] Session loading timed out after 5 seconds');
+    }
+  }, [error, sessionTimeout]);
   
   // Navigation & step control
   const [step, setStep] = useState<AppStep>('welcome');
