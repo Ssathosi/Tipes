@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, ChangeEvent } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
@@ -7,7 +7,7 @@ import { getCategoryById, CATEGORIES } from './categories';
 import { useAuth } from './lib/auth';
 import { supabase } from './lib/supabase';
 import * as services from './lib/services';
-import { exportToCSV, exportToJSON } from './lib/export';
+import { exportToCSV, exportToJSON, importFromJSON, importFromCSV } from './lib/export';
 
 // Components
 import LoginScreen from './components/LoginScreen';
@@ -24,16 +24,14 @@ import SettingsPanel from './components/SettingsPanel';
 type AppStep = 'welcome' | 'budget' | 'categories' | 'app';
 type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 
-// Main app content - only renders when user is authenticated
-function MainApp({ user, isGuest, signOut, enterGuestMode }: {
-  user: { id: string; email?: string } | null;
-  isGuest: boolean;
-  signOut: () => Promise<void>;
-  enterGuestMode: () => void;
-}) {
-  // All state hooks
+export default function App() {
+  const { user, loading: authLoading, isGuest, enterGuestMode, signOut } = useAuth();
+  
+  // Navigation & step control
   const [step, setStep] = useState<AppStep>('welcome');
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+
+  // Application data states
   const [username, setUsername] = useState<string>('User');
   const [monthlyLimit, setMonthlyLimit] = useState<number>(5000000);
   const [selectedMainCategories, setSelectedMainCategories] = useState<string[]>([
@@ -42,27 +40,33 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>(initialWallets);
   const [presets, setPresets] = useState<Preset[]>([]);
+
+  // UI state
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState<boolean>(false);
   const [isPresetManagerOpen, setIsPresetManagerOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [dataLoading, setDataLoading] = useState<boolean>(false);
-  const [showConfetti, setShowConfetti] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const csvInputRef = useRef<HTMLInputElement>(null);
 
+  // Streak
   const streak = calculateStreak(transactions);
 
-  // Load data
+  // Load data from Supabase when user logs in, or from localStorage for guest mode
   useEffect(() => {
+    if (!user && !isGuest) {
+      setTransactions([]);
+      setPresets([]);
+      setStep('welcome');
+      return;
+    }
+
     const loadData = async () => {
       setDataLoading(true);
       try {
         if (isGuest) {
           const savedStep = localStorage.getItem('tipes_step') as AppStep;
           if (savedStep) setStep(savedStep);
-          else setStep('welcome');
 
           const savedUsername = localStorage.getItem('tipes_username');
           if (savedUsername) setUsername(savedUsername);
@@ -87,9 +91,8 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
             setUsername(prefs.username);
             setMonthlyLimit(prefs.monthly_budget);
             setSelectedMainCategories(prefs.selected_categories);
-            setStep('app');
-          } else {
-            setStep('welcome');
+            const savedStep = localStorage.getItem('tipes_step') as AppStep;
+            if (savedStep) setStep(savedStep);
           }
 
           const txs = await services.fetchTransactions(user.id);
@@ -111,26 +114,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     loadData();
   }, [user, isGuest]);
 
-  // Save guest data to localStorage
-  useEffect(() => {
-    if (isGuest && transactions.length > 0) {
-      localStorage.setItem('tipes_transactions', JSON.stringify(transactions));
-    }
-  }, [transactions, isGuest]);
-
-  useEffect(() => {
-    if (isGuest && presets.length > 0) {
-      localStorage.setItem('tipes_presets', JSON.stringify(presets));
-    }
-  }, [presets, isGuest]);
-
-  useEffect(() => {
-    if (isGuest) {
-      localStorage.setItem('tipes_wallets', JSON.stringify(wallets));
-    }
-  }, [wallets, isGuest]);
-
-  // Real-time sync for transactions
+  // Real-time sync for transactions (when user is logged in)
   useEffect(() => {
     if (!user || isGuest) return;
 
@@ -138,251 +122,58 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
       .channel('transactions_changes')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'transactions', filter: `user_id=eq.${user.id}` },
-        (payload) => {
-          if (payload.eventType === 'INSERT') {
-            const newTx = payload.new as Transaction;
-            setTransactions(prev => [newTx, ...prev]);
-          } else if (payload.eventType === 'UPDATE') {
-            setTransactions(prev =>
-              prev.map(tx => tx.id === (payload.new as Transaction).id ? (payload.new as Transaction) : tx)
-            );
-          } else if (payload.eventType === 'DELETE') {
-            setTransactions(prev => prev.filter(tx => tx.id !== (payload.old as Transaction).id));
+        {
+          event: '*',
+          schema: 'public',
+          table: 'transactions',
+          filter: `user_id=eq.${user.id}`
+        },
+        async (payload) => {
+          console.log('[Realtime] Transaction changed:', payload);
+          
+          try {
+            const { data, error } = await supabase
+              .from('transactions')
+              .select('*')
+              .eq('user_id', user.id)
+              .order('date', { ascending: false });
+
+            if (error) throw error;
+
+            const updatedTransactions = (data || []).map(tx => ({
+              id: tx.id,
+              type: tx.type,
+              category: tx.category,
+              amount: tx.amount,
+              description: tx.description,
+              date: tx.date,
+              icon: tx.icon,
+              createdAt: tx.created_at
+            }));
+
+            setTransactions(updatedTransactions);
+          } catch (error) {
+            console.error('[Realtime] Failed to sync transactions:', error);
           }
         }
       )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, isGuest]);
 
-  // Transaction handlers
-  const handleSaveTransaction = useCallback((txData: {
-    title: string; category: string; amount: number; type: 'income' | 'expense'; date?: number;
-  }) => {
-    if (isGuest) {
-      const newTx: Transaction = {
-        ...txData,
-        id: `guest_${Date.now()}`,
-        date: txData.date || Date.now(),
-      };
-      setTransactions(prev => [newTx, ...prev]);
-      setIsAddExpenseOpen(false);
-      return;
-    }
-
-    if (!user) return;
-    services.createTransaction(user.id, {
-      ...txData,
-      date: txData.date || Date.now(),
-    }).then(() => {
-      setIsAddExpenseOpen(false);
-    }).catch(err => console.error('Failed to create transaction:', err));
-  }, [isGuest, user]);
-
-  const handleUpdateTransaction = useCallback((tx: {
-    id: string; title: string; category: string; amount: number; type: 'income' | 'expense'; date: number;
-  }) => {
-    if (isGuest) {
-      setTransactions(prev => prev.map(t => t.id === tx.id ? { ...t, ...tx } : t));
-      setEditingTransaction(null);
-      return;
-    }
-    services.updateTransaction(tx as Transaction).then(() => {
-      setEditingTransaction(null);
-    }).catch(err => console.error('Failed to update transaction:', err));
-  }, [isGuest]);
-
-  const handleDeleteTransaction = useCallback((id: string) => {
-    if (isGuest) {
-      setTransactions(prev => prev.filter(tx => tx.id !== id));
-      return;
-    }
-    services.deleteTransaction(id).catch(err => console.error('Failed to delete transaction:', err));
-  }, [isGuest]);
-
-  const handleUsernameChange = useCallback(async (name: string) => {
-    setUsername(name);
-    if (isGuest) {
-      localStorage.setItem('tipes_username', name);
-      return;
-    }
-    if (!user) return;
-    try {
-      await services.updateUserPreferences(user.id, {
-        username: name,
-        monthly_budget: monthlyLimit,
-        selected_categories: selectedMainCategories,
-      });
-    } catch (error) {
-      console.error('Failed to update username:', error);
-    }
-  }, [user, isGuest, monthlyLimit, selectedMainCategories]);
-
-  const handleBudgetChange = useCallback(async (limit: number) => {
-    setMonthlyLimit(limit);
-    if (isGuest) {
-      localStorage.setItem('tipes_budget', limit.toString());
-      return;
-    }
-    if (!user) return;
-    try {
-      await services.updateUserPreferences(user.id, {
-        username,
-        monthly_budget: limit,
-        selected_categories: selectedMainCategories,
-      });
-    } catch (error) {
-      console.error('Failed to update budget:', error);
-    }
-  }, [user, isGuest, username, selectedMainCategories]);
-
-  const handleCategoriesChange = useCallback(async (categories: string[]) => {
-    setSelectedMainCategories(categories);
-    if (isGuest) {
-      localStorage.setItem('tipes_categories', JSON.stringify(categories));
-      return;
-    }
-    if (!user) return;
-    try {
-      await services.updateUserPreferences(user.id, {
-        username,
-        monthly_budget: monthlyLimit,
-        selected_categories: categories,
-      });
-    } catch (error) {
-      console.error('Failed to update categories:', error);
-    }
-  }, [user, isGuest, username, monthlyLimit]);
-
-  const handleCompleteOnboarding = useCallback(async () => {
-    if (!isGuest && user) {
-      try {
-        await services.updateUserPreferences(user.id, {
-          username,
-          monthly_budget: monthlyLimit,
-          selected_categories: selectedMainCategories,
-        });
-      } catch (error) {
-        console.error('Failed to save onboarding:', error);
-      }
+  const saveToLocal = useCallback((key: string, value: any) => {
+    if (typeof value === 'string') {
+      localStorage.setItem(key, value);
     } else {
-      localStorage.setItem('tipes_step', 'app');
-      localStorage.setItem('tipes_username', username);
-      localStorage.setItem('tipes_budget', monthlyLimit.toString());
-      localStorage.setItem('tipes_categories', JSON.stringify(selectedMainCategories));
+      localStorage.setItem(key, JSON.stringify(value));
     }
-    setStep('app');
-  }, [user, isGuest, username, monthlyLimit, selectedMainCategories]);
-
-  const handleSavePreset = useCallback(async (preset: Omit<Preset, 'id'>) => {
-    const newPreset: Preset = {
-      ...preset,
-      id: `preset_${Date.now()}`,
-    };
-    setPresets(prev => [...prev, newPreset]);
-    if (!isGuest && user) {
-      try {
-        await services.createPreset(user.id, preset);
-      } catch (error) {
-        console.error('Failed to save preset:', error);
-      }
-    }
-    setIsPresetManagerOpen(false);
-  }, [isGuest, user]);
-
-  const handleDeletePreset = useCallback(async (id: string) => {
-    setPresets(prev => prev.filter(p => p.id !== id));
-    if (!isGuest && user) {
-      try {
-        await services.deletePreset(id);
-      } catch (error) {
-        console.error('Failed to delete preset:', error);
-      }
-    }
-  }, [isGuest, user]);
-
-  const handleExportCSV = useCallback(() => {
-    exportToCSV(transactions);
-  }, [transactions]);
-
-  const handleExportJSON = useCallback(() => {
-    exportToJSON(transactions);
-  }, [transactions]);
-
-  const handleImportJSON = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = JSON.parse(event.target?.result as string);
-        if (Array.isArray(data)) {
-          setTransactions(prev => [...data, ...prev]);
-        }
-      } catch (err) {
-        console.error('Failed to import JSON:', err);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
   }, []);
 
-  const handleImportCSV = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const content = event.target?.result as string;
-        const lines = content.split('\n').filter(line => line.trim());
-        if (lines.length < 2) return;
-        const dataLines = lines.slice(1);
-        const imported: Transaction[] = dataLines.map((line, index) => {
-          const values = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
-          return {
-            id: `imported-${Date.now()}-${index}`,
-            title: values[0] || 'Imported',
-            category: values[1] || 'Lainnya',
-            amount: parseFloat(values[2]) || 0,
-            type: (values[3] || 'expense') as 'income' | 'expense',
-            date: parseInt(values[4]) || Date.now(),
-          };
-        });
-        setTransactions(prev => [...imported, ...prev]);
-      } catch (err) {
-        console.error('Failed to import CSV:', err);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }, []);
-
-  const handleResetApp = useCallback(async () => {
-    if (isGuest) {
-      localStorage.clear();
-    } else if (user) {
-      try {
-        // Delete all transactions for this user
-        for (const tx of transactions) {
-          await services.deleteTransaction(tx.id);
-        }
-      } catch (error) {
-        console.error('Failed to reset app:', error);
-      }
-    }
-    setTransactions([]);
-    setPresets([]);
-    setUsername('User');
-    setMonthlyLimit(5000000);
-    setSelectedMainCategories(['Makanan', 'Transportasi', 'Belanja', 'Hiburan', 'Kesehatan', 'Utilitas', 'Pemasukan', 'Lainnya']);
-    setStep('welcome');
-    setIsSettingsOpen(false);
-  }, [user, isGuest, transactions]);
-
-  // Loading state
-  if (dataLoading) {
+  // Show loading while checking auth
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
         <div className="text-center">
@@ -393,198 +184,543 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     );
   }
 
-  // Onboarding flow
-  if (step !== 'app') {
-    return (
-      <AnimatePresence mode="wait">
-        {step === 'welcome' && (
-          <OnboardingWelcome
-            onContinue={() => setStep('budget')}
-            onGoToLogin={() => signOut()}
-          />
-        )}
-        {step === 'budget' && (
-          <OnboardingBudget
-            onBack={() => setStep('welcome')}
-            onContinue={(budget) => {
-              setMonthlyLimit(budget);
-              setStep('categories');
-            }}
-          />
-        )}
-        {step === 'categories' && (
-          <OnboardingCategories
-            onBack={() => setStep('budget')}
-            onFinish={(selected) => {
-              setSelectedMainCategories(selected);
-              handleCompleteOnboarding();
-            }}
-          />
-        )}
-      </AnimatePresence>
-    );
-  }
-
-  // Main app
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 pb-24">
-      <AnimatePresence mode="wait">
-        {activeTab === 'dashboard' && (
-          <Dashboard
-            transactions={transactions}
-            wallets={wallets}
-            budgetSpent={transactions
-              .filter(t => t.type === 'expense')
-              .reduce((sum, t) => sum + t.amount, 0)}
-            monthlyLimit={monthlyLimit}
-            onOpenAddExpense={() => setIsAddExpenseOpen(true)}
-            onRotateWallets={() => {}}
-            onDeleteTransaction={handleDeleteTransaction}
-            onEditTransaction={(tx) => setEditingTransaction(tx)}
-            categoryFilter={categoryFilter}
-            setCategoryFilter={setCategoryFilter}
-            onNavigateToHistory={() => setActiveTab('riwayat')}
-            onApplyPreset={(preset) => {
-              handleSaveTransaction({
-                title: preset.label,
-                category: preset.category,
-                amount: preset.amount,
-                type: 'expense',
-                date: Date.now(),
-              });
-            }}
-            presets={presets}
-            streak={streak}
-            username={username}
-          />
-        )}
-        {activeTab === 'insights' && (
-          <Insights
-            transactions={transactions}
-            monthlyLimit={monthlyLimit}
-          />
-        )}
-        {activeTab === 'riwayat' && (
-          <TransactionsHistory
-            transactions={transactions}
-            onDeleteTransaction={handleDeleteTransaction}
-            onEditTransaction={(tx) => setEditingTransaction(tx)}
-            onOpenAddExpense={() => setIsAddExpenseOpen(true)}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-xl border-t border-slate-100 px-6 py-3 flex justify-around items-center z-40">
-        {(['dashboard', 'insights', 'riwayat'] as ActiveTab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => { setActiveTab(tab); setCategoryFilter(null); }}
-            className={`flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-all ${
-              activeTab === tab
-                ? 'text-[#2650cf] font-bold'
-                : 'text-[#747686]'
-            }`}
-          >
-            <span className="material-symbols-outlined text-2xl">
-              {tab === 'dashboard' ? 'dashboard' : tab === 'insights' ? 'insights' : 'history'}
-            </span>
-            <span className="text-[10px]">
-              {tab === 'dashboard' ? 'Beranda' : tab === 'insights' ? 'Insight' : 'Riwayat'}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {/* Add Transaction FAB */}
-      <motion.button
-        whileTap={{ scale: 0.9 }}
-        onClick={() => setIsAddExpenseOpen(true)}
-        className="fixed bottom-20 right-6 w-14 h-14 bg-gradient-to-r from-[#2650cf] to-[#456aea] text-white rounded-full shadow-lg shadow-blue-500/30 flex items-center justify-center z-40"
-      >
-        <span className="material-symbols-outlined text-3xl">add</span>
-      </motion.button>
-
-      {/* Hidden file inputs for import */}
-      <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportJSON} className="hidden" />
-      <input ref={csvInputRef} type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
-
-      {/* Modals & Sheets */}
-      <AddTransactionSheet
-        isOpen={isAddExpenseOpen}
-        onClose={() => setIsAddExpenseOpen(false)}
-        onSave={handleSaveTransaction}
-        presets={presets}
-        onManagePresets={() => {
-          setIsAddExpenseOpen(false);
-          setIsPresetManagerOpen(true);
-        }}
-      />
-
-      {editingTransaction && (
-        <AddTransactionSheet
-          isOpen={!!editingTransaction}
-          onClose={() => setEditingTransaction(null)}
-          onSave={(data) => handleUpdateTransaction({ ...editingTransaction, ...data })}
-          presets={presets}
-          onManagePresets={() => {
-            setEditingTransaction(null);
-            setIsPresetManagerOpen(true);
-          }}
-          editingTransaction={editingTransaction}
-          onUpdate={handleUpdateTransaction}
-        />
-      )}
-
-      <PresetManager
-        isOpen={isPresetManagerOpen}
-        onClose={() => setIsPresetManagerOpen(false)}
-        presets={presets}
-        onSavePreset={handleSavePreset}
-        onDeletePreset={handleDeletePreset}
-      />
-
-      <SettingsPanel
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        username={username}
-        onUsernameChange={handleUsernameChange}
-        monthlyLimit={monthlyLimit}
-        onBudgetChange={handleBudgetChange}
-        onExportCSV={handleExportCSV}
-        onExportJSON={handleExportJSON}
-        onImportJSON={() => fileInputRef.current?.click()}
-        onImportCSV={() => csvInputRef.current?.click()}
-        onResetApp={handleResetApp}
-        onSignOut={async () => {
-          await signOut();
-          setIsSettingsOpen(false);
-        }}
-        streak={streak}
-        transactionCount={transactions.length}
-      />
-    </div>
-  );
-}
-
-// Root component - handles auth flow
-export default function App() {
-  const { user, loading, isGuest, enterGuestMode, signOut } = useAuth();
-
-  if (!loading && !user && !isGuest) {
+  // Show login if not authenticated and not in guest mode
+  if (!user && !isGuest) {
     return <LoginScreen enterGuestMode={enterGuestMode} />;
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="inline-block w-12 h-12 border-4 border-[#2650cf] border-t-transparent rounded-full animate-spin mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
+  // Save user preferences to Supabase
+  const savePreferences = async (prefs: Partial<services.UserPreferences>) => {
+    if (!user) return;
+    try {
+      await services.updateUserPreferences(user.id, prefs);
+    } catch (error) {
+      console.error('Failed to save preferences:', error);
+    }
+  };
 
-  return <MainApp user={user} isGuest={isGuest} signOut={signOut} enterGuestMode={enterGuestMode} />;
+  // Wallet rotation
+  const handleRotateWallets = () => {
+    const rotated = [...wallets];
+    const first = rotated.shift();
+    if (first) {
+      rotated.push(first);
+      setWallets(rotated);
+      saveToLocal('tipes_wallets', rotated);
+    }
+  };
+
+  // Get icon config for a category
+  const getCategoryIconConfig = (categoryId: string) => {
+    const cat = getCategoryById(categoryId);
+    if (cat) return { icon: cat.icon, iconBg: cat.bgClass, iconColor: cat.iconColor };
+    return { icon: 'payments', iconBg: 'bg-slate-100', iconColor: 'text-slate-700' };
+  };
+
+  // Save new transaction
+  const handleSaveExpense = async (newTx: { 
+    title: string; 
+    category: string; 
+    amount: number; 
+    type: 'income' | 'expense';
+    date?: number;
+  }) => {
+    const config = getCategoryIconConfig(newTx.category);
+    const now = newTx.date || Date.now();
+
+    if (isGuest) {
+      const guestTx: Transaction = {
+        id: `guest_${Date.now()}`,
+        title: newTx.title,
+        category: newTx.category,
+        amount: newTx.amount,
+        type: newTx.type,
+        date: now,
+        icon: config.icon,
+        iconBg: config.iconBg,
+        iconColor: config.iconColor,
+      };
+      setTransactions([guestTx, ...transactions]);
+      setIsAddExpenseOpen(false);
+      return;
+    }
+
+    if (!user) return;
+    
+    try {
+      const createdTx = await services.createTransaction(user.id, {
+        title: newTx.title,
+        category: newTx.category,
+        amount: newTx.amount,
+        type: newTx.type,
+        date: now,
+        icon: config.icon,
+        iconBg: config.iconBg,
+        iconColor: config.iconColor,
+      });
+
+      setTransactions([createdTx, ...transactions]);
+
+      // Update wallet balance locally
+      const updatedWallets = [...wallets];
+      if (newTx.type === 'expense') {
+        updatedWallets[0].balance = Math.max(0, updatedWallets[0].balance - newTx.amount);
+      } else {
+        updatedWallets[0].balance += newTx.amount;
+      }
+      setWallets(updatedWallets);
+      saveToLocal('tipes_wallets', updatedWallets);
+    } catch (error) {
+      console.error('Failed to save transaction:', error);
+      alert('Gagal menyimpan transaksi. Silakan coba lagi.');
+    }
+  };
+
+  // Update existing transaction (edit)
+  const handleUpdateTransaction = async (updatedTx: Transaction) => {
+    const config = getCategoryIconConfig(updatedTx.category);
+    const finalTx: Transaction = {
+      ...updatedTx,
+      icon: config.icon,
+      iconBg: config.iconBg,
+      iconColor: config.iconColor,
+    };
+
+    try {
+      if (isGuest) {
+        const updatedTxs = transactions.map(t => t.id === finalTx.id ? finalTx : t);
+        setTransactions(updatedTxs);
+        setEditingTransaction(null);
+        return;
+      }
+      await services.updateTransaction(finalTx);
+      const updatedTxs = transactions.map(t => t.id === finalTx.id ? finalTx : t);
+      setTransactions(updatedTxs);
+      setEditingTransaction(null);
+    } catch (error) {
+      console.error('Failed to update transaction:', error);
+      alert('Gagal memperbarui transaksi. Silakan coba lagi.');
+    }
+  };
+
+  // Delete transaction
+  const handleDeleteTransaction = async (id: string) => {
+    const target = transactions.find(t => t.id === id);
+    if (!target) return;
+
+    try {
+      if (!isGuest) {
+        await services.deleteTransaction(id);
+      }
+      const filtered = transactions.filter(t => t.id !== id);
+      setTransactions(filtered);
+
+      // Refund / deduct wallet balance
+      const updatedWallets = [...wallets];
+      if (target.type === 'expense') {
+        updatedWallets[0].balance += target.amount;
+      } else {
+        updatedWallets[0].balance = Math.max(0, updatedWallets[0].balance - target.amount);
+      }
+      setWallets(updatedWallets);
+      saveToLocal('tipes_wallets', updatedWallets);
+    } catch (error) {
+      console.error('Failed to delete transaction:', error);
+      alert('Gagal menghapus transaksi. Silakan coba lagi.');
+    }
+  };
+
+  // Preset management
+  const handleSavePreset = async (preset: Preset) => {
+    if (isGuest) {
+      const existing = presets.find(p => p.id === preset.id);
+      if (existing) {
+        setPresets(presets.map(p => p.id === preset.id ? preset : p));
+      } else {
+        setPresets([...presets, { ...preset, id: `preset_${Date.now()}` }]);
+      }
+      return;
+    }
+
+    if (!user) return;
+    
+    const existing = presets.find(p => p.id === preset.id);
+    
+    try {
+      if (existing) {
+        const updated = await services.updatePreset(preset);
+        const updatedPresets = presets.map(p => p.id === preset.id ? updated : p);
+        setPresets(updatedPresets);
+      } else {
+        if (presets.length >= 10) {
+          alert('Maksimal 10 preset! Hapus salah satu terlebih dahulu.');
+          return;
+        }
+        const created = await services.createPreset(user.id, preset);
+        setPresets([...presets, created]);
+      }
+    } catch (error) {
+      console.error('Failed to save preset:', error);
+      alert('Gagal menyimpan preset. Silakan coba lagi.');
+    }
+  };
+
+  const handleDeletePreset = async (id: string) => {
+    try {
+      if (!isGuest) {
+        await services.deletePreset(id);
+      }
+      const updatedPresets = presets.filter(p => p.id !== id);
+      setPresets(updatedPresets);
+    } catch (error) {
+      console.error('Failed to delete preset:', error);
+      alert('Gagal menghapus preset. Silakan coba lagi.');
+    }
+  };
+
+  const handleApplyPreset = (preset: Preset) => {
+    handleSaveExpense({
+      title: preset.label,
+      category: preset.category,
+      amount: preset.amount,
+      type: 'expense',
+    });
+  };
+
+  // CSV Export
+  const handleExportCSV = () => {
+    const headers = ['Tanggal', 'Judul', 'Kategori', 'Jumlah', 'Tipe'];
+    const rows = transactions.map(t => [
+      new Date(t.date).toLocaleDateString('id-ID'),
+      t.title,
+      t.category,
+      t.amount.toString(),
+      t.type === 'income' ? 'Pemasukan' : 'Pengeluaran',
+    ]);
+    
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(cell => `"${cell}"`).join(','))
+      .join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `tipes_export_${new Date().toISOString().slice(0,10)}.csv`);
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // JSON Export
+  const handleExportJSON = () => {
+    exportToJSON(transactions);
+  };
+
+  // JSON Import
+  const handleImportJSON = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      
+      try {
+        const imported = await importFromJSON(file);
+        setTransactions([...imported, ...transactions]);
+        alert(`Berhasil mengimpor ${imported.length} transaksi`);
+      } catch (error) {
+        alert(`Import gagal: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    };
+    input.click();
+  };
+
+  // CSV Import
+  const handleImportCSV = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      
+      try {
+        const imported = await importFromCSV(file);
+        setTransactions([...imported, ...transactions]);
+        alert(`Berhasil mengimpor ${imported.length} transaksi`);
+      } catch (error) {
+        alert(`Import gagal: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    };
+    input.click();
+  };
+
+  // Reset app
+  const handleResetApp = () => {
+    if (!confirm('Reset semua data? Tindakan ini tidak bisa dibatalkan.')) return;
+    localStorage.clear();
+    setTransactions(initialTransactions);
+    setWallets(initialWallets);
+    setPresets(initialPresets);
+    setUsername('User');
+    setMonthlyLimit(5000000);
+    setStep('welcome');
+    setActiveTab('dashboard');
+  };
+
+  // Budget spent calculation
+  const budgetSpent = transactions
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  return (
+    <div className="max-w-md mx-auto min-h-screen bg-slate-50 relative flex flex-col shadow-2xl overflow-hidden border border-slate-100">
+      
+      {/* Onboarding welcome */}
+      {step === 'welcome' && (
+        <OnboardingWelcome 
+          onContinue={() => {
+            setStep('budget');
+            saveToLocal('tipes_step', 'budget');
+          }}
+          onGoToLogin={() => {
+            setStep('app');
+            saveToLocal('tipes_step', 'app');
+          }}
+        />
+      )}
+
+      {/* Onboarding budget */}
+      {step === 'budget' && (
+        <OnboardingBudget 
+          onBack={() => {
+            setStep('welcome');
+            saveToLocal('tipes_step', 'welcome');
+          }}
+          onContinue={async (budget) => {
+            setMonthlyLimit(budget);
+            await savePreferences({ monthly_budget: budget });
+            setStep('categories');
+            saveToLocal('tipes_step', 'categories');
+          }}
+        />
+      )}
+
+      {/* Onboarding categories */}
+      {step === 'categories' && (
+        <OnboardingCategories 
+          onBack={() => {
+            setStep('budget');
+            saveToLocal('tipes_step', 'budget');
+          }}
+          onFinish={async (categories) => {
+            setSelectedMainCategories(categories);
+            await savePreferences({ selected_categories: categories });
+            setStep('app');
+            saveToLocal('tipes_step', 'app');
+          }}
+        />
+      )}
+
+      {/* Main app */}
+      {step === 'app' && (
+        <div className="flex-grow flex flex-col justify-between">
+          
+          {/* Header */}
+          <header className="fixed top-0 w-full max-w-md z-40 bg-white/85 backdrop-blur-md flex items-center justify-between px-6 h-16 border-b border-slate-100/50">
+            <div className="flex items-center gap-3">
+              <div 
+                onClick={() => setIsSettingsOpen(true)}
+                className="w-10 h-10 rounded-full overflow-hidden border-2 border-blue-200 cursor-pointer hover:opacity-90 active:scale-95 transition-all"
+                title="Pengaturan"
+              >
+                <img 
+                  alt={username} 
+                  className="w-full h-full object-cover" 
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuCwdbVrWDx7kyGUT2RyWk9jrp1WKSx8tOTym4WBTs_Ln-xz2E-CJypYVklHt9kCv89A9kzD43Pn-g63jlcRG0B6SO5ZEOVZ4YOM_6nNjUDmAXQlGsOvPShAfxVKoE60e9fM5rUjx9wbS1uyxkjnvHiUzYmZ2ay1eRENa-yF2B_fF0iAVWX4JakAW4_vZnoCDZCQHFhbQmlmCgPTB0VmIvaJUas3Z9A-z5XdecWggryOFVV-vpk__Yxq20SQB0WL_xKLsNZ5hSmPQSc"
+                />
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide leading-none">Hello,</p>
+                <h1 className="font-bold text-sm text-[#121c2a] mt-0.5">{username}</h1>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Streak Badge */}
+              <div className="flex items-center gap-1.5 bg-gradient-to-r from-orange-50 to-amber-50 px-3 py-1.5 rounded-full border border-orange-200/50 text-xs font-bold">
+                <span className="text-sm">🔥</span>
+                <span className="text-orange-700">{streak.current} day{streak.current !== 1 ? 's' : ''}</span>
+              </div>
+
+              {/* Notification Bell */}
+              <button 
+                onClick={() => {
+                  const remaining = monthlyLimit - budgetSpent;
+                  const percent = monthlyLimit > 0 ? Math.round((budgetSpent / monthlyLimit) * 100) : 0;
+                  alert(
+                    `📊 Budget Report\n\n` +
+                    `Limit: ${formatIDR(monthlyLimit)}\n` +
+                    `Spent: ${formatIDR(budgetSpent)} (${percent}%)\n` +
+                    `Remaining: ${formatIDR(Math.max(0, remaining))}\n\n` +
+                    `${percent >= 80 ? '⚠️ Warning: Budget hampir habis!' : '✅ Budget masih aman!'}`
+                  );
+                }}
+                className="w-9 h-9 flex items-center justify-center rounded-full bg-slate-50 text-[#434654] border border-slate-100 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">notifications</span>
+              </button>
+            </div>
+          </header>
+
+          {/* Tab Content */}
+          <main className="flex-grow">
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                transactions={transactions}
+                wallets={wallets}
+                budgetSpent={budgetSpent}
+                monthlyLimit={monthlyLimit}
+                onOpenAddExpense={() => setIsAddExpenseOpen(true)}
+                onRotateWallets={handleRotateWallets}
+                onDeleteTransaction={handleDeleteTransaction}
+                onEditTransaction={(tx) => setEditingTransaction(tx)}
+                categoryFilter={categoryFilter}
+                setCategoryFilter={setCategoryFilter}
+                onNavigateToHistory={() => setActiveTab('riwayat')}
+                onApplyPreset={handleApplyPreset}
+                presets={presets}
+                streak={streak}
+                username={username}
+              />
+            )}
+
+            {activeTab === 'insights' && (
+              <Insights 
+                transactions={transactions}
+                monthlyLimit={monthlyLimit}
+              />
+            )}
+
+            {activeTab === 'riwayat' && (
+              <TransactionsHistory 
+                transactions={transactions}
+                onDeleteTransaction={handleDeleteTransaction}
+                onEditTransaction={(tx) => setEditingTransaction(tx)}
+                onOpenAddExpense={() => setIsAddExpenseOpen(true)}
+              />
+            )}
+          </main>
+
+          {/* Bottom Navigator */}
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[calc(100%-32px)] max-w-sm z-40">
+            <nav className="flex justify-between items-center px-6 h-16 bg-[#0F1419]/95 backdrop-blur-md border border-white/10 rounded-full shadow-2xl text-white/50">
+              
+              {/* Home Tab */}
+              <button 
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex flex-col items-center justify-center w-12 cursor-pointer transition-all ${
+                  activeTab === 'dashboard' ? 'text-white' : 'hover:text-white/80'
+                }`}
+              >
+                <span className={`material-symbols-outlined text-lg ${activeTab === 'dashboard' ? 'font-fill font-black' : ''}`}>grid_view</span>
+                <span className="text-[10px] font-bold mt-0.5">Home</span>
+              </button>
+
+              {/* Insights Tab */}
+              <button 
+                onClick={() => setActiveTab('insights')}
+                className={`flex flex-col items-center justify-center w-12 cursor-pointer transition-all ${
+                  activeTab === 'insights' ? 'text-white' : 'hover:text-white/80'
+                }`}
+              >
+                <span className="material-symbols-outlined text-lg">analytics</span>
+                <span className="text-[10px] font-bold mt-0.5">Insights</span>
+              </button>
+
+              {/* Add Button */}
+              <div className="relative -top-6">
+                <button 
+                  onClick={() => setIsAddExpenseOpen(true)}
+                  className="w-14 h-14 bg-gradient-to-r from-[#2650cf] to-[#456aea] text-white rounded-full shadow-lg shadow-blue-500/30 border-4 border-[#0F1419] flex items-center justify-center active:scale-90 hover:scale-105 transition-all cursor-pointer"
+                  title="Tambah Transaksi"
+                >
+                  <span className="material-symbols-outlined text-3xl font-black">add</span>
+                </button>
+              </div>
+
+              {/* History Tab */}
+              <button 
+                onClick={() => setActiveTab('riwayat')}
+                className={`flex flex-col items-center justify-center w-12 cursor-pointer transition-all ${
+                  activeTab === 'riwayat' ? 'text-white' : 'hover:text-white/80'
+                }`}
+              >
+                <span className="material-symbols-outlined text-lg">account_balance_wallet</span>
+                <span className="text-[10px] font-bold mt-0.5">Riwayat</span>
+              </button>
+
+              {/* Settings Tab */}
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                className="flex flex-col items-center justify-center w-12 hover:text-white/80 cursor-pointer transition-all"
+                title="Pengaturan"
+              >
+                <span className="material-symbols-outlined text-lg">settings</span>
+                <span className="text-[10px] font-bold mt-0.5">Setting</span>
+              </button>
+            </nav>
+          </div>
+
+          {/* Add Transaction Sheet */}
+          <AddTransactionSheet 
+            isOpen={isAddExpenseOpen}
+            onClose={() => { setIsAddExpenseOpen(false); setEditingTransaction(null); }}
+            onSave={handleSaveExpense}
+            presets={presets}
+            onManagePresets={() => setIsPresetManagerOpen(true)}
+            editingTransaction={editingTransaction}
+            onUpdate={handleUpdateTransaction}
+          />
+
+          {/* Preset Manager Sheet */}
+          <PresetManager
+            isOpen={isPresetManagerOpen}
+            onClose={() => setIsPresetManagerOpen(false)}
+            presets={presets}
+            onSavePreset={handleSavePreset}
+            onDeletePreset={handleDeletePreset}
+          />
+
+          {/* Settings Panel */}
+          <SettingsPanel
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            username={username}
+            onUsernameChange={async (name) => {
+              setUsername(name);
+              await savePreferences({ username: name });
+            }}
+            monthlyLimit={monthlyLimit}
+            onBudgetChange={async (limit) => {
+              setMonthlyLimit(limit);
+              await savePreferences({ monthly_budget: limit });
+            }}
+            onExportCSV={handleExportCSV}
+            onExportJSON={handleExportJSON}
+            onImportJSON={handleImportJSON}
+            onImportCSV={handleImportCSV}
+            onResetApp={handleResetApp}
+            onSignOut={async () => {
+              await signOut();
+              setIsSettingsOpen(false);
+            }}
+            streak={streak}
+            transactionCount={transactions.length}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
