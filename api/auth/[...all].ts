@@ -21,4 +21,4 @@ export const auth = betterAuth({
   ],
 });
 
-export default toNodeHandler(auth);
+export default toNodeHandler(auth.handler);
