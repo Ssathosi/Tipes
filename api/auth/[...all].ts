@@ -1,12 +1,12 @@
-import { toNextJsHandler } from 'better-auth/next-js';
 import { betterAuth } from 'better-auth';
-import { supabaseAdapter } from 'better-auth/adapters/supabase';
+import { toNodeHandler } from 'better-auth/integrations/node';
+import { dash } from '@better-auth/infra';
 
 export const auth = betterAuth({
-  database: supabaseAdapter({
-    url: process.env.VITE_SUPABASE_URL!,
-    key: process.env.VITE_SUPABASE_ANON_KEY!,
-  }),
+  database: {
+    url: process.env.DATABASE_URL,
+  },
+  plugins: [dash()],
   emailAndPassword: {
     enabled: true,
   },
@@ -16,12 +16,11 @@ export const auth = betterAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     },
   },
-  session: {
-    cookieCache: {
-      enabled: true,
-      maxAge: 5 * 60, // 5 minutes
-    },
-  },
+  trustedOrigins: [
+    process.env.BETTER_AUTH_URL || 'http://localhost:3000',
+  ],
 });
 
-export default toNextJsHandler(auth);
+export default async function handler(req: any, res: any) {
+  return toNodeHandler(auth)(req, res);
+}
