@@ -1,5 +1,5 @@
 import { betterAuth } from 'better-auth';
-import { toNodeHandler } from 'better-auth/integrations/node';
+import { toNodeHandler } from 'better-call/node';
 import { dash } from '@better-auth/infra';
 
 export const auth = betterAuth({
@@ -17,10 +17,8 @@ export const auth = betterAuth({
     },
   },
   trustedOrigins: [
-    process.env.BETTER_AUTH_URL || 'http://localhost:3000',
+    process.env.BETTER_AUTH_URL || 'https://sth-tipes.vercel.app',
   ],
 });
 
-export default async function handler(req: any, res: any) {
-  return toNodeHandler(auth)(req, res);
-}
+export default toNodeHandler(auth);
