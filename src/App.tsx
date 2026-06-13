@@ -27,6 +27,26 @@ type ActiveTab = 'dashboard' | 'insights' | 'riwayat';
 export default function App() {
   const { user, loading, isGuest, enterGuestMode, signOut } = useAuth();
 
+  // Navigation & step control - hooks must be called before any early returns
+  const [step, setStep] = useState<AppStep>(() => {
+    // Check if user has completed onboarding before
+    const userId = user?.id || 'guest';
+    const onboardingKey = `tipes_onboarding_completed_${userId}`;
+    const hasCompletedOnboarding = localStorage.getItem(onboardingKey) === 'true';
+    return hasCompletedOnboarding ? 'app' : 'welcome';
+  });
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+
+  // Application data states
+  const [username, setUsername] = useState<string>('User');
+  const [monthlyLimit, setMonthlyLimit] = useState<number>(5000000);
+  const [selectedMainCategories, setSelectedMainCategories] = useState<string[]>([
+    'Makanan', 'Transportasi', 'Belanja', 'Hiburan', 'Kesehatan', 'Utilitas', 'Pemasukan', 'Lainnya'
+  ]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [wallets, setWallets] = useState<Wallet[]>(initialWallets);
+  const [presets, setPresets] = useState<Preset[]>([]);
+
   // Redirect to login if not authenticated and not in guest mode
   if (!loading && !user && !isGuest) {
     return <LoginScreen enterGuestMode={enterGuestMode} />;
@@ -43,20 +63,6 @@ export default function App() {
       </div>
     );
   }
-  
-  // Navigation & step control
-  const [step, setStep] = useState<AppStep>('welcome');
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-
-  // Application data states
-  const [username, setUsername] = useState<string>('User');
-  const [monthlyLimit, setMonthlyLimit] = useState<number>(5000000);
-  const [selectedMainCategories, setSelectedMainCategories] = useState<string[]>([
-    'Makanan', 'Transportasi', 'Belanja', 'Hiburan', 'Kesehatan', 'Utilitas', 'Pemasukan', 'Lainnya'
-  ]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [wallets, setWallets] = useState<Wallet[]>(initialWallets);
-  const [presets, setPresets] = useState<Preset[]>([]);
 
   // UI state
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
@@ -105,11 +111,11 @@ export default function App() {
         } else if (user) {
           const prefs = await services.fetchUserPreferences(user.id);
           if (prefs) {
+            // User has completed onboarding before
             setUsername(prefs.username);
             setMonthlyLimit(prefs.monthly_budget);
             setSelectedMainCategories(prefs.selected_categories);
-            const savedStep = localStorage.getItem('tipes_step') as AppStep;
-            if (savedStep) setStep(savedStep);
+            setStep('app'); // Skip onboarding, go straight to app
           }
 
           const txs = await services.fetchTransactions(user.id);
