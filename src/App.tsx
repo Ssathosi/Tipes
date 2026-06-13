@@ -47,6 +47,14 @@ export default function App() {
   const [wallets, setWallets] = useState<Wallet[]>(initialWallets);
   const [presets, setPresets] = useState<Preset[]>([]);
 
+  // UI state
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [isAddExpenseOpen, setIsAddExpenseOpen] = useState<boolean>(false);
+  const [isPresetManagerOpen, setIsPresetManagerOpen] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [dataLoading, setDataLoading] = useState<boolean>(false);
+
   // Redirect to login if not authenticated and not in guest mode
   if (!loading && !user && !isGuest) {
     return <LoginScreen enterGuestMode={enterGuestMode} />;
@@ -63,14 +71,6 @@ export default function App() {
       </div>
     );
   }
-
-  // UI state
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-  const [isAddExpenseOpen, setIsAddExpenseOpen] = useState<boolean>(false);
-  const [isPresetManagerOpen, setIsPresetManagerOpen] = useState<boolean>(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [dataLoading, setDataLoading] = useState<boolean>(false);
 
   // Streak
   const streak = calculateStreak(transactions);
