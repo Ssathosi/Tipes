@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Transaction, Wallet, Preset } from './types';
 import { initialTransactions, initialWallets, initialPresets } from './initialData';
@@ -311,7 +311,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     exportToJSON(transactions);
   }, [transactions]);
 
-  const handleImportJSON = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportJSON = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -329,7 +329,7 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
     e.target.value = '';
   }, []);
 
-  const handleImportCSV = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportCSV = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -399,28 +399,26 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
       <AnimatePresence mode="wait">
         {step === 'welcome' && (
           <OnboardingWelcome
-            key="welcome"
-            onNext={() => setStep('budget')}
-            username={username}
-            onUsernameChange={setUsername}
+            onContinue={() => setStep('budget')}
+            onGoToLogin={() => signOut()}
           />
         )}
         {step === 'budget' && (
           <OnboardingBudget
-            key="budget"
-            onNext={() => setStep('categories')}
             onBack={() => setStep('welcome')}
-            monthlyLimit={monthlyLimit}
-            onBudgetChange={setMonthlyLimit}
+            onContinue={(budget) => {
+              setMonthlyLimit(budget);
+              setStep('categories');
+            }}
           />
         )}
         {step === 'categories' && (
           <OnboardingCategories
-            key="categories"
-            onComplete={handleCompleteOnboarding}
             onBack={() => setStep('budget')}
-            selectedCategories={selectedMainCategories}
-            onCategoriesChange={setSelectedMainCategories}
+            onFinish={(selected) => {
+              setSelectedMainCategories(selected);
+              handleCompleteOnboarding();
+            }}
           />
         )}
       </AnimatePresence>
@@ -433,37 +431,45 @@ function MainApp({ user, isGuest, signOut, enterGuestMode }: {
       <AnimatePresence mode="wait">
         {activeTab === 'dashboard' && (
           <Dashboard
-            key="dashboard"
             transactions={transactions}
             wallets={wallets}
+            budgetSpent={transactions
+              .filter(t => t.type === 'expense')
+              .reduce((sum, t) => sum + t.amount, 0)}
             monthlyLimit={monthlyLimit}
-            username={username}
-            streak={streak}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-            onAddTransaction={() => setIsAddExpenseOpen(true)}
-            onOpenPresetManager={() => setIsPresetManagerOpen(true)}
-            onCategoryFilter={setCategoryFilter}
-            categoryFilter={categoryFilter}
-            onSwitchTab={setActiveTab}
+            onOpenAddExpense={() => setIsAddExpenseOpen(true)}
+            onRotateWallets={() => {}}
+            onDeleteTransaction={handleDeleteTransaction}
             onEditTransaction={(tx) => setEditingTransaction(tx)}
+            categoryFilter={categoryFilter}
+            setCategoryFilter={setCategoryFilter}
+            onNavigateToHistory={() => setActiveTab('riwayat')}
+            onApplyPreset={(preset) => {
+              handleSaveTransaction({
+                title: preset.label,
+                category: preset.category,
+                amount: preset.amount,
+                type: 'expense',
+                date: Date.now(),
+              });
+            }}
+            presets={presets}
+            streak={streak}
+            username={username}
           />
         )}
         {activeTab === 'insights' && (
           <Insights
-            key="insights"
             transactions={transactions}
             monthlyLimit={monthlyLimit}
-            selectedCategories={selectedMainCategories}
           />
         )}
         {activeTab === 'riwayat' && (
           <TransactionsHistory
-            key="history"
             transactions={transactions}
             onDeleteTransaction={handleDeleteTransaction}
             onEditTransaction={(tx) => setEditingTransaction(tx)}
-            onCategoryFilter={setCategoryFilter}
-            categoryFilter={categoryFilter}
+            onOpenAddExpense={() => setIsAddExpenseOpen(true)}
           />
         )}
       </AnimatePresence>
