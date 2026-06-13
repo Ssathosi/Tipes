@@ -1,5 +1,4 @@
 import { betterAuth } from 'better-auth';
-import { toNodeHandler } from 'better-call/node';
 import { dash } from '@better-auth/infra';
 
 export const auth = betterAuth({
@@ -21,4 +20,8 @@ export const auth = betterAuth({
   ],
 });
 
-export default toNodeHandler(auth.handler);
+export const config = {
+  runtime: 'edge',
+};
+
+export default auth.handler;
